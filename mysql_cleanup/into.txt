@@ -1,0 +1,1 @@
+mysql_config_editor set --login-path=devclaude --host=HOSTNAME --port=PORT --user=devclaude --password 
