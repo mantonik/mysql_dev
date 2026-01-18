@@ -1,0 +1,315 @@
+================================================================================
+MySQL Cleanup Script - Setup Commands Reference
+================================================================================
+
+This file contains all the commands needed to set up the cleanup script
+environment, including creating databases, tables, and inserting sample data.
+
+================================================================================
+1. CONFIGURE MYSQL LOGIN PATH
+================================================================================
+
+# Set up login path for development environment
+mysql_config_editor set --login-path=devclaude \
+  --host=193.122.164.72 \
+  --port=13306 \
+  --user=devclaude \
+  --password
+
+# Verify login path
+mysql_config_editor print --login-path=devclaude
+
+# Test connection
+mysql --login-path=devclaude -e "SELECT 'Connection successful' as status"
+
+================================================================================
+2. CREATE dev_support DATABASE AND CONFIGURATION TABLE
+================================================================================
+
+# Execute schema creation
+mysql --login-path=devclaude < dev_support_schema.sql
+
+# Verify table creation
+mysql --login-path=devclaude dev_support -e "SHOW TABLES"
+mysql --login-path=devclaude dev_support -e "DESC c_sup_cleanup_config"
+
+================================================================================
+3. INSERT SAMPLE CLEANUP CONFIGURATIONS
+================================================================================
+
+# Insert sample configurations for cleanup
+mysql --login-path=devclaude < dev_support_insert.sql
+
+# Verify configurations inserted
+mysql --login-path=devclaude dev_support -e "
+SELECT
+    config_id,
+    db_schema,
+    table_name,
+    retension_days,
+    group_id,
+    CASE status WHEN 1 THEN 'ACTIVE' ELSE 'INACTIVE' END as status,
+    CASE binlog_on_off WHEN 1 THEN 'ENABLED' ELSE 'DISABLED' END as binlog
+FROM c_sup_cleanup_config
+ORDER BY config_id"
+
+================================================================================
+4. CREATE dev_app DATABASE AND APPLICATION TABLES
+================================================================================
+
+# Execute schema creation for app tables
+mysql --login-path=devclaude < dev_app_schema.sql
+
+# Verify tables created
+mysql --login-path=devclaude dev_app -e "SHOW TABLES"
+
+# Check table structures
+mysql --login-path=devclaude dev_app -e "DESC trx"
+mysql --login-path=devclaude dev_app -e "DESC p_orders"
+mysql --login-path=devclaude dev_app -e "DESC p_travers"
+
+================================================================================
+5. GENERATE SAMPLE DATA
+================================================================================
+
+# Generate sample data for all tables (300 trx, 250 orders, 400 travers)
+mysql --login-path=devclaude < dev_app_insert.sql
+
+# Verify data counts
+mysql --login-path=devclaude dev_app -e "
+SELECT 'trx' as table_name, COUNT(*) as record_count FROM trx
+UNION ALL
+SELECT 'p_orders', COUNT(*) FROM p_orders
+UNION ALL
+SELECT 'p_travers', COUNT(*) FROM p_travers"
+
+# Check data date ranges
+mysql --login-path=devclaude dev_app -e "
+SELECT
+    'trx' as table_name,
+    MIN(trx_date) as earliest,
+    MAX(trx_date) as latest,
+    COUNT(*) as total
+FROM trx
+UNION ALL
+SELECT
+    'p_orders',
+    MIN(order_date),
+    MAX(order_date),
+    COUNT(*)
+FROM p_orders
+UNION ALL
+SELECT
+    'p_travers',
+    MIN(created_date),
+    MAX(created_date),
+    COUNT(*)
+FROM p_travers"
+
+================================================================================
+6. RESET/RELOAD DATA (IF NEEDED)
+================================================================================
+
+# To completely reset and reload all data:
+
+# Step 1: Drop and recreate dev_support
+mysql --login-path=devclaude < dev_support_schema.sql
+mysql --login-path=devclaude < dev_support_insert.sql
+
+# Step 2: Drop and recreate dev_app
+mysql --login-path=devclaude < dev_app_schema.sql
+mysql --login-path=devclaude < dev_app_insert.sql
+
+# Or execute all in sequence:
+mysql --login-path=devclaude < dev_support_schema.sql && \
+mysql --login-path=devclaude < dev_support_insert.sql && \
+mysql --login-path=devclaude < dev_app_schema.sql && \
+mysql --login-path=devclaude < dev_app_insert.sql
+
+================================================================================
+7. RUN CLEANUP SCRIPT
+================================================================================
+
+# Make script executable
+chmod +x mysql_cleanup.py
+
+# View help
+python3 mysql_cleanup.py --help
+
+# Dry run for all active configurations
+python3 mysql_cleanup.py --dry-run
+
+# Dry run for specific group_id
+python3 mysql_cleanup.py --group-id 1 --dry-run
+
+# Execute cleanup for group_id 1
+python3 mysql_cleanup.py --group-id 1
+
+# Execute cleanup for all active configurations
+python3 mysql_cleanup.py
+
+# Execute with debug logging
+python3 mysql_cleanup.py --group-id 1 --debug
+
+================================================================================
+8. VERIFY CLEANUP RESULTS
+================================================================================
+
+# Check how many records remain after cleanup
+mysql --login-path=devclaude dev_app -e "
+SELECT
+    'trx' as table_name,
+    COUNT(*) as remaining_records,
+    MIN(trx_date) as oldest_record
+FROM trx
+UNION ALL
+SELECT
+    'p_orders',
+    COUNT(*),
+    MIN(order_date)
+FROM p_orders
+UNION ALL
+SELECT
+    'p_travers',
+    COUNT(*),
+    MIN(created_date)
+FROM p_travers"
+
+# Check last run timestamps
+mysql --login-path=devclaude dev_support -e "
+SELECT
+    config_id,
+    table_name,
+    last_run_at,
+    TIMESTAMPDIFF(MINUTE, last_run_at, NOW()) as minutes_ago
+FROM c_sup_cleanup_config
+WHERE last_run_at IS NOT NULL
+ORDER BY last_run_at DESC"
+
+# Count records that would be deleted (without executing)
+mysql --login-path=devclaude dev_app -e "
+SELECT COUNT(*) as would_delete_from_trx
+FROM trx
+WHERE trx_date < DATE_ADD(CURDATE(), INTERVAL -300 DAY)"
+
+mysql --login-path=devclaude dev_app -e "
+SELECT COUNT(*) as would_delete_from_p_orders
+FROM p_orders
+WHERE order_date < DATE_ADD(CURDATE(), INTERVAL -180 DAY)"
+
+mysql --login-path=devclaude dev_app -e "
+SELECT COUNT(*) as would_delete_from_p_travers
+FROM p_travers
+WHERE created_date < DATE_ADD(CURDATE(), INTERVAL -90 DAY)"
+
+================================================================================
+9. MANAGE CLEANUP CONFIGURATIONS
+================================================================================
+
+# View all configurations
+mysql --login-path=devclaude dev_support -e "SELECT * FROM c_sup_cleanup_config"
+
+# Add new cleanup configuration
+mysql --login-path=devclaude dev_support -e "
+INSERT INTO c_sup_cleanup_config
+    (login_path, oracle_tns_name, db_schema, table_name, where_condition,
+     retension_days, cleanup_group, group_id, status, binlog_on_off, delete_limit)
+VALUES
+    ('devclaude', NULL, 'dev_app', 'new_table',
+     'created_at < DATE_ADD(CURDATE(), INTERVAL -RETENSION DAY)',
+     365, 'daily_cleanup', 1, 1, 1, 1000)"
+
+# Disable a cleanup configuration
+mysql --login-path=devclaude dev_support -e "
+UPDATE c_sup_cleanup_config
+SET status = 0
+WHERE config_id = 1"
+
+# Enable a cleanup configuration
+mysql --login-path=devclaude dev_support -e "
+UPDATE c_sup_cleanup_config
+SET status = 1
+WHERE config_id = 1"
+
+# Change retention period
+mysql --login-path=devclaude dev_support -e "
+UPDATE c_sup_cleanup_config
+SET retension_days = 365
+WHERE config_id = 1"
+
+# Delete a configuration
+mysql --login-path=devclaude dev_support -e "
+DELETE FROM c_sup_cleanup_config
+WHERE config_id = 999"
+
+================================================================================
+10. TROUBLESHOOTING
+================================================================================
+
+# Check if login path is configured
+mysql_config_editor print --all
+
+# Test connection with login path
+mysql --login-path=devclaude -e "SELECT DATABASE(), USER(), VERSION()"
+
+# Check if databases exist
+mysql --login-path=devclaude -e "SHOW DATABASES LIKE 'dev_%'"
+
+# Check table counts
+mysql --login-path=devclaude dev_support -e "
+SELECT 'c_sup_cleanup_config' as table_name, COUNT(*) as row_count
+FROM c_sup_cleanup_config"
+
+# View cleanup script log output
+python3 mysql_cleanup.py --group-id 1 --dry-run 2>&1 | tee cleanup_test.log
+
+# Check MySQL error log (if accessible)
+# tail -f /var/log/mysql/error.log
+
+================================================================================
+11. SCHEDULED EXECUTION (CRON)
+================================================================================
+
+# Edit crontab
+crontab -e
+
+# Run cleanup daily at 2 AM for group_id 1
+0 2 * * * cd /home/mariusz/git/mysql/mysql_dev/mysql_dev/mysql_cleanup && /usr/bin/python3 mysql_cleanup.py --group-id 1 >> /var/log/mysql_cleanup.log 2>&1
+
+# Run cleanup weekly on Sunday at 3 AM for all groups
+0 3 * * 0 cd /home/mariusz/git/mysql/mysql_dev/mysql_dev/mysql_cleanup && /usr/bin/python3 mysql_cleanup.py >> /var/log/mysql_cleanup_weekly.log 2>&1
+
+# View cron jobs
+crontab -l
+
+================================================================================
+12. FILES IN THIS DIRECTORY
+================================================================================
+
+cleanup.cfg                    - Configuration file with login_path and database settings
+mysql_cleanup.py               - Main cleanup script (Python)
+dev_support_schema.sql         - Schema for configuration database
+dev_support_insert.sql         - Sample cleanup configurations
+dev_app_schema.sql             - Schema for application tables (trx, p_orders, p_travers)
+dev_app_insert.sql             - Sample data generation for application tables
+CONFIG_TABLE_REFERENCE.md      - Complete documentation for c_sup_cleanup_config table
+CLAUDE.md                      - Project requirements and specifications
+info.txt                       - This file - setup commands reference
+
+================================================================================
+13. QUICK START SUMMARY
+================================================================================
+
+# Complete setup from scratch:
+1. Configure login path: mysql_config_editor set --login-path=devclaude ...
+2. Create config DB: mysql --login-path=devclaude < dev_support_schema.sql
+3. Insert configs: mysql --login-path=devclaude < dev_support_insert.sql
+4. Create app tables: mysql --login-path=devclaude < dev_app_schema.sql
+5. Generate data: mysql --login-path=devclaude < dev_app_insert.sql
+6. Test cleanup: python3 mysql_cleanup.py --group-id 1 --dry-run
+7. Execute cleanup: python3 mysql_cleanup.py --group-id 1
+
+================================================================================
+End of Reference
+================================================================================
+Last Updated: 2026-01-18
